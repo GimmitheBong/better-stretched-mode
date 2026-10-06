@@ -1,0 +1,5 @@
+.gradle/
+build/
+.idea/
+*.iml
+PLUGIN_HUB_SUBMISSION.md

@@ -1,0 +1,49 @@
+plugins {
+	id 'java'
+}
+
+group = 'com.minimapresize'
+version = '0.3.0'
+
+repositories {
+	maven {
+		url = 'https://repo.runelite.net'
+		content { includeGroupByRegex 'net\\.runelite.*' }
+	}
+	mavenCentral()
+}
+
+def runeLiteVersion = providers.gradleProperty('runeliteVersion').getOrElse('latest.release')
+
+dependencies {
+	compileOnly "net.runelite:client:${runeLiteVersion}"
+	testImplementation "net.runelite:client:${runeLiteVersion}"
+	testImplementation "net.runelite:jshell:${runeLiteVersion}"
+	testImplementation 'junit:junit:4.13.2'
+	testImplementation 'org.mockito:mockito-core:4.11.0'
+}
+
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = 'UTF-8'
+	options.release.set(11)
+}
+
+processResources {
+	from 'runelite-plugin.properties'
+}
+
+tasks.register('run', JavaExec) {
+	dependsOn testClasses
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'com.minimapresize.MinimapResizeLauncher'
+	jvmArgs '-ea'
+	args '--developer-mode'
+}
+
+test {
+	systemProperty 'java.awt.headless', 'true'
+}
+
+wrapper {
+	gradleVersion = '8.8'
+}
