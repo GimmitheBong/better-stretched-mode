@@ -60,6 +60,44 @@ public class WidgetInputGateTest
 	}
 
 	@Test
+	public void repeatedFramesReuseTraversalUntilTheNextScriptTick()
+	{
+		Widget root = mock(Widget.class);
+		Widget child = mock(Widget.class);
+		when(root.getStaticChildren()).thenReturn(new Widget[]{child});
+		WidgetInputGate gate = new WidgetInputGate();
+		gate.exclude(root);
+		gate.restore();
+		gate.exclude(root);
+		gate.restore();
+		verify(root, times(1)).getStaticChildren();
+		verify(child, times(1)).getStaticChildren();
+		gate.invalidateTraversal();
+		gate.exclude(root);
+		verify(root, times(2)).getStaticChildren();
+	}
+
+	@Test
+	public void nextTickDiscoversRecreatedChildrenAndNewActions()
+	{
+		Widget root = mock(Widget.class);
+		Widget original = mock(Widget.class);
+		Widget replacement = mock(Widget.class);
+		when(root.getDynamicChildren()).thenReturn(new Widget[]{original});
+		WidgetInputGate gate = new WidgetInputGate();
+		gate.exclude(root);
+		gate.restore();
+		gate.invalidateTraversal();
+		when(root.getDynamicChildren()).thenReturn(new Widget[]{replacement});
+		when(replacement.getNoClickThrough()).thenReturn(true);
+		when(replacement.getActions()).thenReturn(new String[]{"New action"});
+		gate.exclude(root);
+		gate.restore();
+		verify(replacement).setNoClickThrough(false);
+		verify(replacement).setAction(0, "New action");
+	}
+
+	@Test
 	public void traversesAllKindsOfChildrenWithoutDuplicatingSharedNodes()
 	{
 		Widget root = mock(Widget.class);

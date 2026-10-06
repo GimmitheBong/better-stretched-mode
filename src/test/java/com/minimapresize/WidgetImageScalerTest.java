@@ -144,6 +144,58 @@ public class WidgetImageScalerTest
 	}
 
 	@Test
+	public void unchangedPixelsReuseFilteredImageAndChangedSettingsInvalidateIt()
+	{
+		WidgetImageScaler scaler = new WidgetImageScaler();
+		BufferedImage source = detailImage();
+		BufferedImage first = scaler.scale(source, 24, 12, ScalingFilter.SHARP_BICUBIC, 40, true);
+		int[] expected = pixels(first);
+		assertTrue(scaler.updated());
+		assertSame(first, scaler.scale(source, 24, 12, ScalingFilter.SHARP_BICUBIC, 40, false));
+		assertFalse(scaler.updated());
+		assertArrayEquals(expected, pixels(first));
+		scaler.scale(source, 24, 12, ScalingFilter.SHARP_BICUBIC, 60, false);
+		assertTrue(scaler.updated());
+		scaler.scale(source, 25, 12, ScalingFilter.SHARP_BICUBIC, 60, false);
+		assertTrue(scaler.updated());
+	}
+
+	@Test
+	public void refreshLimitDefersChangesWithoutLosingThemAndDoesNotDelaySettings()
+	{
+		WidgetImageScaler scaler = new WidgetImageScaler();
+		BufferedImage source = detailImage();
+		BufferedImage first = scaler.scale(source, 24, 12, ScalingFilter.NEAREST, 0, true, 1);
+		int[] expected = pixels(first);
+		source.setRGB(8, 4, 0xffff0000);
+		scaler.scale(source, 24, 12, ScalingFilter.NEAREST, 0, true, 1);
+		assertFalse(scaler.updated());
+		assertArrayEquals(expected, pixels(first));
+		// No new source change, but the deferred change must still be rendered when unlocked.
+		scaler.scale(source, 24, 12, ScalingFilter.NEAREST, 0, false, 0);
+		assertTrue(scaler.updated());
+		assertFalse(java.util.Arrays.equals(expected, pixels(first)));
+		scaler.scale(source, 24, 12, ScalingFilter.BILINEAR, 0, false, 1);
+		assertTrue(scaler.updated());
+	}
+
+	@Test
+	public void translatedSourceSubimageIsFilteredFromItsOwnPixels()
+	{
+		BufferedImage parent = new BufferedImage(20, 20, BufferedImage.TYPE_INT_ARGB);
+		BufferedImage subimage = parent.getSubimage(6, 5, 8, 8);
+		for (int y = 0; y < 8; y++)
+		{
+			for (int x = 0; x < 8; x++) { subimage.setRGB(x, y, 0xff33cc88); }
+		}
+		for (ScalingFilter filter : ScalingFilter.values())
+		{
+			BufferedImage result = new WidgetImageScaler().scale(subimage, 12, 12, filter, 40);
+			for (int pixel : pixels(result)) { assertEquals(0xff33cc88, pixel); }
+		}
+	}
+
+	@Test
 	public void defaultFilterKeepsThePreviousSmoothSetting()
 	{
 		MinimapResizeConfig oldSmooth = new MinimapResizeConfig()

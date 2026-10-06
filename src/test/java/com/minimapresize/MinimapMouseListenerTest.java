@@ -28,6 +28,7 @@ public class MinimapMouseListenerTest
 		client = mock(Client.class);
 		plugin = mock(MinimapResizePlugin.class);
 		listener = new MinimapMouseListener(client, plugin);
+		when(plugin.translateMenuPoint(any(Point.class))).thenAnswer(invocation -> invocation.getArgument(0));
 		when(client.getGameState()).thenReturn(GameState.LOGGED_IN);
 		when(client.isResized()).thenReturn(true);
 		BufferedImage foreground = new BufferedImage(100, 100, BufferedImage.TYPE_INT_ARGB);
@@ -68,6 +69,25 @@ public class MinimapMouseListenerTest
 	}
 
 	@Test
+	public void openMenuMovementClickAndWheelUseMenuCoordinatesInsteadOfPanelScaling()
+	{
+		when(client.isMenuOpen()).thenReturn(true);
+		when(plugin.translateMenuPoint(any(Point.class))).thenAnswer(invocation ->
+		{
+			Point point = invocation.getArgument(0);
+			return new Point(point.x + 75, point.y - 40);
+		});
+		MouseEvent move = new MouseEvent(canvas, MouseEvent.MOUSE_MOVED, 124, 0, 850, 100, 0, false);
+		assertEquals(new Point(925, 60), listener.mouseMoved(move).getPoint());
+		assertEquals(new Point(925, 40), listener.mousePressed(press(850, 80)).getPoint());
+		MouseWheelEvent wheel = new MouseWheelEvent(canvas, MouseEvent.MOUSE_WHEEL, 123, 0,
+			850, 80, 850, 80, 0, false, MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, 1, 0.25);
+		assertEquals(new Point(925, 40), listener.mouseWheelMoved(wheel).getPoint());
+		assertEquals(0.25, wheel.getPreciseWheelRotation(), 0.0);
+		assertFalse(wheel.isConsumed());
+	}
+
+	@Test
 	public void fixedModeLogoutAndDisabledPluginDoNotTranslate()
 	{
 		when(client.isResized()).thenReturn(false);
@@ -101,6 +121,63 @@ public class MinimapMouseListenerTest
 		assertEquals(new Point(850, 100), frame.translate(new Point(850, 100)));
 		assertEquals(new Point(950, 50), frame.translate(new Point(875, 125)));
 		assertEquals(new Point(500, 500), frame.translate(new Point(500, 500)));
+	}
+
+	@Test
+	public void transparentInventoryUsesItsWholeInteractiveRectangle()
+	{
+		when(plugin.getInputFrames()).thenReturn(Collections.singletonList(new MinimapInputFrame(WidgetRegion.SIDE_PANEL,
+			new MinimapTransform(new Rectangle(900, 0, 100, 100), new Rectangle(800, 0, 200, 200)),
+			new BufferedImage(100, 100, BufferedImage.TYPE_INT_ARGB))));
+		MouseWheelEvent wheel = new MouseWheelEvent(canvas, MouseEvent.MOUSE_WHEEL, 123, 0,
+			850, 80, 0, false, MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, 1);
+		assertEquals(new Point(925, 40), listener.mouseWheelMoved(wheel).getPoint());
+	}
+
+	@Test
+	public void inventoryDragAndReleaseStayInCapturedCoordinatesOutsidePanel()
+	{
+		when(plugin.getInputFrames()).thenReturn(Collections.singletonList(new MinimapInputFrame(WidgetRegion.SIDE_PANEL,
+			new MinimapTransform(new Rectangle(900, 0, 100, 100), new Rectangle(800, 0, 200, 200)),
+			new BufferedImage(100, 100, BufferedImage.TYPE_INT_ARGB))));
+		listener.mousePressed(press(850, 80));
+		MouseEvent drag = new MouseEvent(canvas, MouseEvent.MOUSE_DRAGGED, 124, InputEvent.BUTTON1_DOWN_MASK, 750, 220, 0, false);
+		assertEquals(new Point(875, 110), listener.mouseDragged(drag).getPoint());
+		MouseEvent release = new MouseEvent(canvas, MouseEvent.MOUSE_RELEASED, 125, 0, 750, 220, 1, false, MouseEvent.BUTTON1);
+		assertEquals(new Point(875, 110), listener.mouseReleased(release).getPoint());
+		verify(plugin).recordDragTarget(WidgetRegion.SIDE_PANEL, true);
+		assertEquals(new Point(750, 220), listener.mouseMoved(new MouseEvent(canvas, MouseEvent.MOUSE_MOVED, 126, 0, 750, 220, 0, false)).getPoint());
+	}
+
+	@Test
+	public void closedPanelCancelsCapturedDragInsteadOfRoutingToAStaleWidget()
+	{
+		when(plugin.getInputFrames()).thenReturn(Collections.singletonList(new MinimapInputFrame(WidgetRegion.SIDE_PANEL,
+			new MinimapTransform(new Rectangle(900, 0, 100, 100), new Rectangle(800, 0, 200, 200)),
+			new BufferedImage(100, 100, BufferedImage.TYPE_INT_ARGB))));
+		listener.mousePressed(press(850, 80));
+		when(plugin.getInputFrames()).thenReturn(Collections.emptyList());
+		MouseEvent drag = new MouseEvent(canvas, MouseEvent.MOUSE_DRAGGED, 124, 0, 750, 220, 0, false);
+		assertEquals(new Point(750, 220), listener.mouseDragged(drag).getPoint());
+		verify(plugin).recordDragTarget(null, false);
+	}
+
+	@Test
+	public void cachedHitMasksRemainImmutableAndRefreshWhenDisplayedAlphaChanges()
+	{
+		BufferedImage image = new BufferedImage(10, 10, BufferedImage.TYPE_INT_ARGB);
+		image.setRGB(5, 5, 0xffffffff);
+		MinimapTransform transform = new MinimapTransform(new Rectangle(0, 0, 10, 10), new Rectangle(20, 20, 10, 10));
+		MinimapInputFrame first = new MinimapInputFrame(WidgetRegion.MINIMAP, transform, image);
+		image.setRGB(5, 5, 0);
+		image.setRGB(6, 6, 0xffffffff);
+		MinimapInputFrame deferred = new MinimapInputFrame(WidgetRegion.MINIMAP, transform, image, first, false);
+		assertTrue(deferred.hit(new Point(25, 25)));
+		assertFalse(deferred.hit(new Point(26, 26)));
+		MinimapInputFrame refreshed = new MinimapInputFrame(WidgetRegion.MINIMAP, transform, image, deferred, true);
+		assertFalse(refreshed.hit(new Point(25, 25)));
+		assertTrue(refreshed.hit(new Point(26, 26)));
+		assertTrue(first.hit(new Point(25, 25)));
 	}
 
 	@Test

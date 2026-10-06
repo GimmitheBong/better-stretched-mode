@@ -31,7 +31,8 @@ final class MinimapTransform
 		scale = Math.min(scale, Math.min((double) width / source.width, (double) height / source.height));
 		int w = Math.max(1, (int) Math.round(source.width * scale));
 		int h = Math.max(1, (int) Math.round(source.height * scale));
-		int x = Math.max(0, Math.min(width - w, source.x + source.width - w - left));
+		int desiredX = source.x + source.width - w - left;
+		int x = Math.max(0, Math.min(width - w, desiredX));
 		int desiredY = bottomAnchor ? source.y + source.height - h - verticalOffset : source.y + verticalOffset;
 		int y = Math.max(0, Math.min(height - h, desiredY));
 		return new MinimapTransform(source, new Rectangle(x, y, w, h));

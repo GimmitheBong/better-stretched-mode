@@ -1,6 +1,8 @@
 package com.minimapresize;
 
 import java.util.IdentityHashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import net.runelite.api.widgets.Widget;
 
@@ -13,6 +15,8 @@ import net.runelite.api.widgets.Widget;
 final class WidgetInputGate
 {
 	private final Map<Widget, SavedInput> excluded = new IdentityHashMap<>();
+	private final Map<Widget, SavedInput> templates = new IdentityHashMap<>();
+	private final Map<Widget, List<Widget>> trees = new IdentityHashMap<>();
 
 	private static final class SavedInput
 	{
@@ -57,33 +61,53 @@ final class WidgetInputGate
 
 	void exclude(Widget widget)
 	{
-		if (widget == null || excluded.containsKey(widget))
+		if (widget == null || excluded.containsKey(widget)) { return; }
+		List<Widget> tree = trees.get(widget);
+		if (tree == null)
 		{
-			return;
+			tree = new ArrayList<>();
+			collect(widget, tree, new IdentityHashMap<>());
+			trees.put(widget, tree);
 		}
-		excluded.put(widget, new SavedInput(widget));
-		widget.setNoClickThrough(false);
-		widget.setNoScrollThrough(false);
-		// Includes the special minimap content type, which otherwise handles walking
-		// directly rather than through menu entries.
-		widget.setContentType(0);
-		widget.setClickMask(0);
-		widget.clearActions();
-		widget.setOnOpListener((Object[]) null);
-		exclude(widget.getStaticChildren());
-		exclude(widget.getDynamicChildren());
-		exclude(widget.getNestedChildren());
+		for (Widget child : tree)
+		{
+			if (excluded.containsKey(child)) { continue; }
+			excluded.put(child, templates.get(child));
+			child.setNoClickThrough(false);
+			child.setNoScrollThrough(false);
+			child.setContentType(0);
+			child.setClickMask(0);
+			child.clearActions();
+			child.setOnOpListener((Object[]) null);
+		}
 	}
 
-	private void exclude(Widget[] children)
+	private void collect(Widget widget, List<Widget> result, Map<Widget, Boolean> visited)
+	{
+		if (widget == null || visited.put(widget, true) != null) { return; }
+		result.add(widget);
+		templates.computeIfAbsent(widget, SavedInput::new);
+		collect(widget.getStaticChildren(), result, visited);
+		collect(widget.getDynamicChildren(), result, visited);
+		collect(widget.getNestedChildren(), result, visited);
+	}
+
+	private void collect(Widget[] children, List<Widget> result, Map<Widget, Boolean> visited)
 	{
 		if (children != null)
 		{
 			for (Widget child : children)
 			{
-				exclude(child);
+				collect(child, result, visited);
 			}
 		}
+	}
+
+	/** Call after restoration and before client scripts can recreate or modify widgets. */
+	void invalidateTraversal()
+	{
+		trees.clear();
+		templates.clear();
 	}
 
 	void restore()

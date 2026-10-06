@@ -5,28 +5,48 @@ import java.awt.Shape;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
 
-/** Captures the pre-widget background and extracts changes at the map-layer hook. */
+/** Captures a native layer and restores its background using reusable int arrays. */
 final class MinimapCompositor
 {
 	private BufferedImage frame;
+	private BufferedImage lastImage;
+	private PackedPixels packed;
 	private Rectangle source;
 	private int[] background;
+	private int[] fallbackPixels;
 	private BufferedImage foreground;
+	private Shape coverageShape;
+	private Rectangle coverageSource;
+	private boolean[] coverage;
+	private boolean changed;
+	private boolean maskChanged;
 
 	void capture(BufferedImage frame, Rectangle source)
 	{
 		this.frame = frame;
 		this.source = new Rectangle(source);
-		int length = source.width * source.height;
-		if (background == null || background.length != length)
+		if (lastImage != frame)
 		{
-			background = new int[length];
+			lastImage = frame;
+			packed = PackedPixels.of(frame);
 		}
+		int length = source.width * source.height;
+		if (background == null || background.length != length) { background = new int[length]; }
 		if (foreground == null || foreground.getWidth() != source.width || foreground.getHeight() != source.height)
 		{
 			foreground = new BufferedImage(source.width, source.height, BufferedImage.TYPE_INT_ARGB);
 		}
-		frame.getRGB(source.x, source.y, source.width, source.height, background, 0, source.width);
+		if (packed == null)
+		{
+			frame.getRGB(source.x, source.y, source.width, source.height, background, 0, source.width);
+		}
+		else
+		{
+			for (int y = 0; y < source.height; y++)
+			{
+				System.arraycopy(packed.pixels, packed.index(source.x, source.y + y), background, y * source.width, source.width);
+			}
+		}
 	}
 
 	boolean matches(BufferedImage frame, Rectangle source)
@@ -36,37 +56,79 @@ final class MinimapCompositor
 
 	BufferedImage extractAndRestore(Shape opaqueMapInterior)
 	{
+		updateCoverage(opaqueMapInterior);
 		int[] pixels = ((DataBufferInt) foreground.getRaster().getDataBuffer()).getData();
-		frame.getRGB(source.x, source.y, source.width, source.height, pixels, 0, source.width);
+		if (packed == null)
+		{
+			if (fallbackPixels == null || fallbackPixels.length != pixels.length) { fallbackPixels = new int[pixels.length]; }
+			frame.getRGB(source.x, source.y, source.width, source.height, fallbackPixels, 0, source.width);
+		}
+		changed = false;
+		maskChanged = false;
 		for (int y = 0, i = 0; y < source.height; y++)
 		{
+			int row = packed == null ? 0 : packed.index(source.x, source.y + y);
 			for (int x = 0; x < source.width; x++, i++)
 			{
-				// The software renderer has no separate UI alpha channel. Preserve the map's
-				// opaque interior even when a map pixel happens to equal the scene beneath it.
-				if (pixels[i] == background[i]
-					&& (opaqueMapInterior == null || !opaqueMapInterior.contains(source.x + x + 0.5, source.y + y + 0.5)))
-				{
-					pixels[i] = 0;
-				}
+				int raw = packed == null ? fallbackPixels[i] : packed.pixels[row + x];
+				int difference = raw ^ background[i];
+				boolean same = packed != null && packed.opaque ? (difference & 0xffffff) == 0 : difference == 0;
+				int pixel = same && (coverage == null || !coverage[i]) ? 0
+					: packed != null && packed.opaque ? raw | 0xff000000 : raw;
+				int previous = pixels[i];
+				changed |= pixel != previous;
+				maskChanged |= (pixel >>> 24 != 0) != (previous >>> 24 != 0);
+				pixels[i] = pixel;
+			}
+			if (packed != null)
+			{
+				System.arraycopy(background, y * source.width, packed.pixels, row, source.width);
 			}
 		}
-		// Replace, rather than alpha-blend, so transparent GPU background is restored too.
-		frame.setRGB(source.x, source.y, source.width, source.height, background, 0, source.width);
+		if (packed == null)
+		{
+			frame.setRGB(source.x, source.y, source.width, source.height, background, 0, source.width);
+		}
 		frame = null;
 		return foreground;
 	}
 
-	void invalidate()
+	private void updateCoverage(Shape shape)
 	{
-		frame = null;
+		if (shape == null)
+		{
+			coverage = null;
+			coverageShape = null;
+			return;
+		}
+		if (shape.equals(coverageShape) && source.equals(coverageSource)) { return; }
+		coverageShape = shape;
+		coverageSource = new Rectangle(source);
+		coverage = new boolean[source.width * source.height];
+		for (int y = 0, i = 0; y < source.height; y++)
+		{
+			for (int x = 0; x < source.width; x++, i++)
+			{
+				coverage[i] = shape.contains(source.x + x + 0.5, source.y + y + 0.5);
+			}
+		}
 	}
+
+	boolean changed() { return changed; }
+	boolean maskChanged() { return maskChanged; }
+	void invalidate() { frame = null; }
 
 	void clear()
 	{
 		frame = null;
+		lastImage = null;
+		packed = null;
 		source = null;
 		background = null;
+		fallbackPixels = null;
 		foreground = null;
+		coverage = null;
+		coverageShape = null;
+		coverageSource = null;
 	}
 }

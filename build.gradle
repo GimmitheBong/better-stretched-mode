@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'com.minimapresize'
-version = '0.3.0'
+version = '0.4.0'
 
 repositories {
 	maven {
@@ -42,6 +42,13 @@ tasks.register('run', JavaExec) {
 
 test {
 	systemProperty 'java.awt.headless', 'true'
+}
+
+tasks.register('benchmark', JavaExec) {
+	dependsOn testClasses
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'com.minimapresize.ScalerBenchmark'
+	jvmArgs '-Djava.awt.headless=true'
 }
 
 wrapper {

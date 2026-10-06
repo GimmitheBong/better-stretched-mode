@@ -19,6 +19,11 @@ final class InputRoute
 		return new InputRoute(point, null);
 	}
 
+	static InputRoute drag(Point point, MinimapInputFrame frame)
+	{
+		return new InputRoute(frame.translateDrag(point), frame.region());
+	}
+
 	static InputRoute resolve(Point point, List<MinimapInputFrame> frames)
 	{
 		// Route once, to the topmost visible region. Never feed one transform into another.

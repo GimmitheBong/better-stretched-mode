@@ -4,12 +4,13 @@ import net.runelite.api.Client;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
 
-/** The order matches the native modern-layout draw order. */
+/** Output stacking order; extraction follows the actual layer hooks in either layout. */
 enum WidgetRegion
 {
 	MINIMAP(InterfaceID.ToplevelOsrsStretch.MAP_CONTAINER, InterfaceID.ToplevelPreEoc.MAP_CONTAINER),
 	LOWER_TABS(InterfaceID.ToplevelPreEoc.SIDE_STATIC_LAYER),
-	UPPER_TABS(InterfaceID.ToplevelPreEoc.SIDE_MOVABLE_LAYER);
+	UPPER_TABS(InterfaceID.ToplevelPreEoc.SIDE_MOVABLE_LAYER),
+	SIDE_PANEL(InterfaceID.ToplevelOsrsStretch.SIDE_CONTAINER, InterfaceID.ToplevelPreEoc.SIDE_CONTAINER);
 
 	final int[] components;
 
@@ -29,5 +30,11 @@ enum WidgetRegion
 			}
 		}
 		return null;
+	}
+
+	boolean rectangularInput()
+	{
+		// Empty inventory slots are still part of the interactive side panel.
+		return this == SIDE_PANEL;
 	}
 }

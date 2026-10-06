@@ -16,6 +16,7 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.inject.Inject;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
@@ -23,6 +24,7 @@ import net.runelite.api.MainBufferProvider;
 import net.runelite.api.events.BeforeRender;
 import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameStateChanged;
+import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.PostClientTick;
 import net.runelite.api.events.ResizeableChanged;
 import net.runelite.api.gameval.InterfaceID;
@@ -39,8 +41,8 @@ import net.runelite.client.ui.overlay.OverlayManager;
 
 @PluginDescriptor(
 	name = "Better Stretched Mode",
-	description = "Independent minimap/orb scaling and modern-layout tab bar scaling",
-	tags = {"minimap", "resize", "scale", "orbs", "tabs", "stretch", "filter", "sharpen"}
+	description = "Independent minimap, inventory/side-panel and modern-layout tab bar scaling",
+	tags = {"minimap", "resize", "scale", "orbs", "tabs", "stretch", "filter", "sharpen", "inventory"}
 )
 public class MinimapResizePlugin extends Plugin
 {
@@ -50,15 +52,21 @@ public class MinimapResizePlugin extends Plugin
 	@Inject private MouseManager mouseManager;
 	@Inject private ClientThread clientThread;
 	private MinimapMouseListener mouseListener;
+	private MenuRelocator menus;
 
 	private final Map<WidgetRegion, RegionState> states = new EnumMap<>(WidgetRegion.class);
 	private final List<Overlay> overlays = new ArrayList<>();
 	private final WidgetInputGate inputGate = new WidgetInputGate();
 	private final AtomicReference<PendingPress> pendingPress = new AtomicReference<>();
+	private final AtomicBoolean gateQueued = new AtomicBoolean();
 	private volatile List<MinimapInputFrame> inputFrames = Collections.emptyList();
 	private volatile Point pointer = new Point(-1, -1);
+	private volatile WidgetRegion dragTarget;
+	private volatile boolean dragReleased;
 	private volatile boolean enabled;
 	private boolean rendering;
+	private boolean gateApplied;
+	private WidgetRegion lastGatedTarget;
 
 	private static final class RegionState
 	{
@@ -69,6 +77,7 @@ public class MinimapResizePlugin extends Plugin
 		BufferedImage foreground;
 		MinimapInputFrame input;
 		boolean rendered;
+		boolean pendingMaskChange;
 	}
 
 	private static final class PendingPress
@@ -93,6 +102,7 @@ public class MinimapResizePlugin extends Plugin
 	@Override
 	protected void startUp()
 	{
+		menus = new MenuRelocator(client);
 		mouseListener = new MinimapMouseListener(client, this);
 		for (WidgetRegion region : WidgetRegion.values())
 		{
@@ -102,6 +112,8 @@ public class MinimapResizePlugin extends Plugin
 		overlays.add(new MinimapCaptureOverlay(this));
 		overlays.add(new ScaledWidgetsOverlay(this));
 		overlays.add(new InputGateOverlay(this));
+		overlays.add(new MenuBackgroundOverlay(menus));
+		overlays.add(new MenuRelocationOverlay(menus));
 		enabled = true;
 		overlays.forEach(overlayManager::add);
 		// Stretched Mode registers at index zero; these receive game-space coordinates.
@@ -115,6 +127,7 @@ public class MinimapResizePlugin extends Plugin
 		enabled = false;
 		inputFrames = Collections.emptyList();
 		pendingPress.set(null);
+		dragTarget = null;
 		mouseManager.unregisterMouseListener(mouseListener);
 		mouseManager.unregisterMouseWheelListener(mouseListener);
 		overlays.forEach(overlayManager::remove);
@@ -122,6 +135,9 @@ public class MinimapResizePlugin extends Plugin
 		clientThread.invokeLater(() ->
 		{
 			inputGate.restore();
+			menus.reset();
+			inputGate.invalidateTraversal();
+			gateApplied = false;
 			if (!enabled)
 			{
 				states.values().forEach(state ->
@@ -139,6 +155,7 @@ public class MinimapResizePlugin extends Plugin
 	{
 		// Input property changes are only for hit testing, never for rendering.
 		inputGate.restore();
+		gateApplied = false;
 		rendering = true;
 		for (RegionState state : states.values())
 		{
@@ -159,10 +176,17 @@ public class MinimapResizePlugin extends Plugin
 		// ClientTick is AFTER the native interface input pass, BEFORE client scripts.
 		// Restore here so scripts can update or intentionally hide the real widgets.
 		inputGate.restore();
+		inputGate.invalidateTraversal();
+		gateApplied = false;
 		PendingPress press = pendingPress.get();
 		if (press != null && client.getMouseLastPressedMillis() >= press.when)
 		{
 			pendingPress.compareAndSet(press, null);
+		}
+		if (dragReleased && client.getMouseCurrentButton() == 0)
+		{
+			dragTarget = null;
+			dragReleased = false;
 		}
 	}
 
@@ -180,6 +204,13 @@ public class MinimapResizePlugin extends Plugin
 	public void onResizeableChanged(ResizeableChanged event) { reset(); }
 
 	@Subscribe
+	public void onMenuOpened(MenuOpened event)
+	{
+		if (canScale()) { menus.opened(); }
+		else { menus.reset(); }
+	}
+
+	@Subscribe
 	public void onConfigChanged(ConfigChanged event)
 	{
 		if (MinimapResizeConfig.GROUP.equals(event.getGroup()))
@@ -191,9 +222,13 @@ public class MinimapResizePlugin extends Plugin
 
 	private void reset()
 	{
+		menus.reset();
 		inputGate.restore();
+		inputGate.invalidateTraversal();
+		gateApplied = false;
 		inputFrames = Collections.emptyList();
 		pendingPress.set(null);
+		dragTarget = null;
 		for (RegionState state : states.values())
 		{
 			state.input = null;
@@ -257,6 +292,8 @@ public class MinimapResizePlugin extends Plugin
 	{
 		switch (region)
 		{
+			case SIDE_PANEL:
+				return MinimapTransform.fit(source, config.panelScale(), config.panelLeft(), config.panelUp(), width, height, true);
 			case UPPER_TABS:
 				return MinimapTransform.fit(source, config.upperTabScale(), config.upperTabLeft(), config.upperTabUp(), width, height, true);
 			case LOWER_TABS:
@@ -283,11 +320,12 @@ public class MinimapResizePlugin extends Plugin
 		{
 			state.input = null;
 		}
-		// Later layers need the current background, including earlier unscaled widgets.
+		// Refresh every capture whose hook has not fired yet. Classic and modern
+		// have different nesting/draw orders, so enum order cannot predict the next layer.
 		for (Map.Entry<WidgetRegion, RegionState> entry : states.entrySet())
 		{
 			RegionState later = entry.getValue();
-			if (entry.getKey().ordinal() > region.ordinal() && later.widget != null
+			if (entry.getKey() != region && later.widget != null
 				&& later.compositor.matches(image, later.widget.getBounds()))
 			{
 				later.compositor.capture(image, later.widget.getBounds());
@@ -319,10 +357,14 @@ public class MinimapResizePlugin extends Plugin
 					continue;
 				}
 				Rectangle destination = state.transform.destination();
+				state.pendingMaskChange |= state.compositor.maskChanged();
+				boolean newInput = state.input == null;
 				BufferedImage filtered = state.scaler.scale(state.foreground, destination.width, destination.height,
-					filter, config.sharpening());
+					filter, config.sharpening(), state.compositor.changed() || newInput, newInput ? 0 : config.scalingFps());
 				g.drawImage(filtered, destination.x, destination.y, null);
-				state.input = new MinimapInputFrame(entry.getKey(), state.transform, state.foreground);
+				state.input = new MinimapInputFrame(entry.getKey(), state.transform, state.foreground,
+					state.input, state.scaler.updated() && state.pendingMaskChange);
+				if (state.scaler.updated()) { state.pendingMaskChange = false; }
 				state.rendered = true;
 			}
 		}
@@ -370,6 +412,16 @@ public class MinimapResizePlugin extends Plugin
 		return enabled ? inputFrames : Collections.emptyList();
 	}
 
+	void recordMenuPress(Point cursor, Point nativePoint, WidgetRegion target)
+	{
+		if (enabled) { menus.recordPress(cursor, nativePoint, target); }
+	}
+
+	Point translateMenuPoint(Point point)
+	{
+		return enabled ? menus.translate(point) : point;
+	}
+
 	void recordPointer(Point point, WidgetRegion target, int eventId, long when)
 	{
 		pointer = new Point(point);
@@ -378,7 +430,20 @@ public class MinimapResizePlugin extends Plugin
 			pendingPress.set(new PendingPress(target, when));
 		}
 		// Runs at the start of the next client cycle, before native interface hit testing.
-		clientThread.invokeLater(this::applyInputGate);
+		if (gateQueued.compareAndSet(false, true))
+		{
+			clientThread.invokeLater(() ->
+			{
+				gateQueued.set(false);
+				applyInputGate();
+			});
+		}
+	}
+
+	void recordDragTarget(WidgetRegion target, boolean released)
+	{
+		dragTarget = target;
+		dragReleased = released;
 	}
 
 	void applyInputGate()
@@ -387,9 +452,10 @@ public class MinimapResizePlugin extends Plugin
 		{
 			return;
 		}
-		inputGate.restore();
 		if (!canScale())
 		{
+			inputGate.restore();
+			gateApplied = false;
 			return;
 		}
 		WidgetRegion target = client.isMenuOpen() ? null : InputRoute.resolve(pointer, getInputFrames()).target;
@@ -399,6 +465,14 @@ public class MinimapResizePlugin extends Plugin
 			// Keep the click's target available even if the pointer moves before the input pass.
 			target = press.target;
 		}
+		if (dragTarget != null && !client.isMenuOpen())
+		{
+			target = dragTarget;
+		}
+		if (gateApplied && target == lastGatedTarget) { return; }
+		inputGate.restore();
+		lastGatedTarget = target;
+		gateApplied = true;
 		for (Map.Entry<WidgetRegion, RegionState> entry : states.entrySet())
 		{
 			RegionState state = entry.getValue();

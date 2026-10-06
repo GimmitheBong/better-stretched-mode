@@ -20,16 +20,31 @@ final class MinimapInputFrame
 
 	MinimapInputFrame(WidgetRegion region, MinimapTransform transform, BufferedImage foreground)
 	{
+		this(region, transform, foreground, null, true);
+	}
+
+	MinimapInputFrame(WidgetRegion region, MinimapTransform transform, BufferedImage foreground,
+		MinimapInputFrame previous, boolean maskChanged)
+	{
 		this.region = region;
 		this.transform = transform;
 		source = transform.source();
-		occupied = new boolean[source.width * source.height];
-		for (int y = 0; y < source.height; y++)
+		if (region.rectangularInput())
 		{
-			for (int x = 0; x < source.width; x++)
-			{
-				occupied[y * source.width + x] = (foreground.getRGB(x, y) >>> 24) != 0;
-			}
+			occupied = null;
+			return;
+		}
+		if (!maskChanged && previous != null && previous.region == region
+			&& previous.source.width == source.width && previous.source.height == source.height)
+		{
+			occupied = previous.occupied;
+			return;
+		}
+		occupied = new boolean[source.width * source.height];
+		int[] pixels = PackedPixels.straightArgb(foreground);
+		for (int i = 0; i < occupied.length; i++)
+		{
+			occupied[i] = (pixels[i] >>> 24) != 0;
 		}
 	}
 
@@ -45,12 +60,18 @@ final class MinimapInputFrame
 
 	boolean hit(Point point)
 	{
-		return transform.containsDestination(point) && occupied(transform.toSource(point));
+		return transform.containsDestination(point) && (region.rectangularInput() || occupied(transform.toSource(point)));
 	}
 
 	WidgetRegion region()
 	{
 		return region;
+	}
+
+	Point translateDrag(Point point)
+	{
+		// Drag deltas must use the captured control's transform even outside its bounds.
+		return transform.toSource(point);
 	}
 
 	private boolean occupied(Point point)
