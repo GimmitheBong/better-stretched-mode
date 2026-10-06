@@ -40,8 +40,7 @@ import net.runelite.client.ui.overlay.OverlayManager;
 @PluginDescriptor(
 	name = "Better Stretched Mode",
 	description = "Independent minimap/orb scaling and modern-layout tab bar scaling",
-	tags = {"minimap", "resize", "scale", "orbs", "tabs", "stretch", "filter", "sharpen"},
-	enabledByDefault = false
+	tags = {"minimap", "resize", "scale", "orbs", "tabs", "stretch", "filter", "sharpen"}
 )
 public class MinimapResizePlugin extends Plugin
 {
