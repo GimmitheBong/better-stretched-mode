@@ -41,7 +41,7 @@ final class MinimapInputFrame
 			return;
 		}
 		occupied = new boolean[source.width * source.height];
-		int[] pixels = PackedPixels.straightArgb(foreground);
+		int[] pixels = PackedPixels.alphaPixels(foreground);
 		for (int i = 0; i < occupied.length; i++)
 		{
 			occupied[i] = (pixels[i] >>> 24) != 0;

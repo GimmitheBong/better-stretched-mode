@@ -131,6 +131,15 @@ final class WidgetImageScaler
 
 	private void premultiply(BufferedImage source)
 	{
+		if (source.getType() == BufferedImage.TYPE_INT_ARGB_PRE)
+		{
+			PackedPixels pixels = PackedPixels.nativePixels(source);
+			for (int y = 0; y < sourceHeight; y++)
+			{
+				System.arraycopy(pixels.pixels, pixels.index(0, y), premultiplied, y * sourceWidth, sourceWidth);
+			}
+			return;
+		}
 		int[] pixels = PackedPixels.straightArgb(source);
 		for (int i = 0; i < pixels.length; i++)
 		{

@@ -26,10 +26,15 @@ final class PackedPixels
 
 	static PackedPixels of(BufferedImage image)
 	{
+		return image.isAlphaPremultiplied() ? null : nativePixels(image);
+	}
+
+	static PackedPixels nativePixels(BufferedImage image)
+	{
 		if (!(image.getColorModel() instanceof DirectColorModel)
 			|| !(image.getRaster().getDataBuffer() instanceof DataBufferInt)
 			|| !(image.getRaster().getSampleModel() instanceof SinglePixelPackedSampleModel)
-			|| image.isAlphaPremultiplied() || !image.getColorModel().getColorSpace().isCS_sRGB())
+			|| !image.getColorModel().getColorSpace().isCS_sRGB())
 		{
 			return null;
 		}
@@ -49,7 +54,18 @@ final class PackedPixels
 
 	static int[] straightArgb(BufferedImage image)
 	{
-		if (image.getType() == BufferedImage.TYPE_INT_ARGB)
+		return colorPixels(image, false);
+	}
+
+	static int[] alphaPixels(BufferedImage image)
+	{
+		return colorPixels(image, true);
+	}
+
+	private static int[] colorPixels(BufferedImage image, boolean acceptPremultiplied)
+	{
+		if (image.getType() == BufferedImage.TYPE_INT_ARGB
+			|| (acceptPremultiplied && image.getType() == BufferedImage.TYPE_INT_ARGB_PRE))
 		{
 			DataBufferInt buffer = (DataBufferInt) image.getRaster().getDataBuffer();
 			int[] data = buffer.getData();

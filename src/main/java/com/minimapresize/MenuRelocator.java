@@ -28,6 +28,7 @@ final class MenuRelocator
 	private final AtomicReference<Press> pending = new AtomicReference<>();
 	private final MinimapCompositor compositor = new MinimapCompositor();
 	private volatile Press active;
+	private volatile Point cameraInputOffset;
 	private MenuPlacement capturedPlacement;
 	private Rectangle capturedArea;
 	private BufferedImage capturedImage;
@@ -53,6 +54,11 @@ final class MenuRelocator
 		return placement == null ? point : placement.toNative(point);
 	}
 
+	void setCameraInputOffset(Point offset)
+	{
+		cameraInputOffset = offset == null ? null : new Point(offset);
+	}
+
 	private BufferedImage image()
 	{
 		if (!(client.getBufferProvider() instanceof MainBufferProvider)) { return null; }
@@ -68,7 +74,10 @@ final class MenuRelocator
 		BufferedImage image = image();
 		if (menu == null || image == null) { return null; }
 		Rectangle bounds = bounds(menu);
-		return bounds.isEmpty() ? null : new MenuPlacement(bounds, press.cursor, image.getWidth(), image.getHeight());
+		if (bounds.isEmpty()) { return null; }
+		Point cameraOffset = cameraInputOffset;
+		return cameraOffset == null ? new MenuPlacement(bounds, press.cursor, image.getWidth(), image.getHeight())
+			: new MenuPlacement(bounds, cameraOffset);
 	}
 
 	private static Rectangle bounds(Menu menu)
@@ -92,7 +101,7 @@ final class MenuRelocator
 		Rectangle area = new Rectangle(capturedPlacement.nativeBounds);
 		collectMenuArea(client.getMenu(), area, new IdentityHashMap<>(), 0);
 		capturedArea = area.intersection(new Rectangle(capturedImage.getWidth(), capturedImage.getHeight()));
-		if (!capturedArea.isEmpty()) { compositor.capture(capturedImage, capturedArea); }
+		if (!capturedArea.isEmpty()) { compositor.capture(capturedImage, capturedArea, client.isGpu()); }
 	}
 
 	private static void collectMenuArea(Menu menu, Rectangle area, Map<Menu, Boolean> visited, int depth)
@@ -126,7 +135,7 @@ final class MenuRelocator
 		try
 		{
 			g.setComposite(AlphaComposite.SrcOver);
-			g.drawImage(foreground, capturedArea.x + current.offsetX, capturedArea.y + current.offsetY, null);
+			UiBlitter.draw(capturedImage, foreground, capturedArea.x + current.offsetX, capturedArea.y + current.offsetY, g, client.isGpu());
 		}
 		finally
 		{
@@ -138,6 +147,7 @@ final class MenuRelocator
 	{
 		pending.set(null);
 		active = null;
+		cameraInputOffset = null;
 		capturedPlacement = null;
 		capturedArea = null;
 		capturedImage = null;

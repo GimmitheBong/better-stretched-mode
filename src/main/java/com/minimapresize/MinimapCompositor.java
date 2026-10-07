@@ -20,21 +20,31 @@ final class MinimapCompositor
 	private boolean[] coverage;
 	private boolean changed;
 	private boolean maskChanged;
+	private boolean nativePremultiplied;
+	private boolean foregroundReset;
 
 	void capture(BufferedImage frame, Rectangle source)
 	{
+		capture(frame, source, false);
+	}
+
+	void capture(BufferedImage frame, Rectangle source, boolean nativePremultiplied)
+	{
 		this.frame = frame;
 		this.source = new Rectangle(source);
-		if (lastImage != frame)
+		if (lastImage != frame || this.nativePremultiplied != nativePremultiplied)
 		{
 			lastImage = frame;
-			packed = PackedPixels.of(frame);
+			packed = nativePremultiplied ? PackedPixels.nativePixels(frame) : PackedPixels.of(frame);
 		}
+		this.nativePremultiplied = nativePremultiplied && packed != null;
 		int length = source.width * source.height;
 		if (background == null || background.length != length) { background = new int[length]; }
-		if (foreground == null || foreground.getWidth() != source.width || foreground.getHeight() != source.height)
+		int type = this.nativePremultiplied ? BufferedImage.TYPE_INT_ARGB_PRE : BufferedImage.TYPE_INT_ARGB;
+		if (foreground == null || foreground.getWidth() != source.width || foreground.getHeight() != source.height || foreground.getType() != type)
 		{
-			foreground = new BufferedImage(source.width, source.height, BufferedImage.TYPE_INT_ARGB);
+			foreground = new BufferedImage(source.width, source.height, type);
+			foregroundReset = true;
 		}
 		if (packed == null)
 		{
@@ -63,8 +73,8 @@ final class MinimapCompositor
 			if (fallbackPixels == null || fallbackPixels.length != pixels.length) { fallbackPixels = new int[pixels.length]; }
 			frame.getRGB(source.x, source.y, source.width, source.height, fallbackPixels, 0, source.width);
 		}
-		changed = false;
-		maskChanged = false;
+		changed = foregroundReset;
+		maskChanged = foregroundReset;
 		for (int y = 0, i = 0; y < source.height; y++)
 		{
 			int row = packed == null ? 0 : packed.index(source.x, source.y + y);
@@ -72,8 +82,9 @@ final class MinimapCompositor
 			{
 				int raw = packed == null ? fallbackPixels[i] : packed.pixels[row + x];
 				int difference = raw ^ background[i];
-				boolean same = packed != null && packed.opaque ? (difference & 0xffffff) == 0 : difference == 0;
+				boolean same = !nativePremultiplied && packed != null && packed.opaque ? (difference & 0xffffff) == 0 : difference == 0;
 				int pixel = same && (coverage == null || !coverage[i]) ? 0
+					: nativePremultiplied ? UiAlpha.extract(raw, background[i])
 					: packed != null && packed.opaque ? raw | 0xff000000 : raw;
 				int previous = pixels[i];
 				changed |= pixel != previous;
@@ -90,6 +101,7 @@ final class MinimapCompositor
 			frame.setRGB(source.x, source.y, source.width, source.height, background, 0, source.width);
 		}
 		frame = null;
+		foregroundReset = false;
 		return foreground;
 	}
 

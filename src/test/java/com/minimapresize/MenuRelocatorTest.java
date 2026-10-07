@@ -139,6 +139,19 @@ public class MenuRelocatorTest
 	}
 
 	@Test
+	public void concurrentRightCameraDragKeepsMenuInputInItsFixedCameraSpace()
+	{
+		open(WidgetRegion.SIDE_PANEL);
+		relocator.setCameraInputOffset(new Point(75, -40));
+		assertEquals(new Point(285, 80), relocator.translate(new Point(210, 120)));
+		MenuPlacement placement = new MenuPlacement(new Rectangle(900, 200, 180, 120), new Point(75, -40));
+		assertEquals(new Rectangle(825, 240, 180, 120), placement.visibleBounds);
+		assertEquals(new Point(990, 220), relocator.translate(new Point(915, 260)));
+		relocator.setCameraInputOffset(null);
+		assertEquals(new Point(1000, 220), relocator.translate(new Point(210, 120)));
+	}
+
+	@Test
 	public void closingOrResettingMenuRestoresNormalMouseCoordinates()
 	{
 		open(WidgetRegion.SIDE_PANEL);

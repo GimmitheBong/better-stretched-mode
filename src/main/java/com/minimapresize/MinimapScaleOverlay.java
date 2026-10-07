@@ -10,27 +10,26 @@ final class MinimapScaleOverlay extends Overlay
 {
 	private final MinimapResizePlugin plugin;
 	private final WidgetRegion region;
+	private final int component;
 
-	MinimapScaleOverlay(MinimapResizePlugin plugin, WidgetRegion region)
+	MinimapScaleOverlay(MinimapResizePlugin plugin, WidgetRegion region, int component)
 	{
 		this.plugin = plugin;
 		this.region = region;
+		this.component = component;
 		setPosition(OverlayPosition.DYNAMIC);
 		setLayer(OverlayLayer.MANUAL);
 		setPriority(PRIORITY_HIGHEST + 1);
-		for (int component : region.components)
-		{
-			drawAfterLayer(component);
-		}
+		drawAfterLayer(component);
 	}
 
 	@Override
-	public String getName() { return "MinimapResize_" + region; }
+	public String getName() { return "MinimapResize_" + region + "_" + component; }
 
 	@Override
 	public Dimension render(Graphics2D graphics)
 	{
-		plugin.drawScaled(region, graphics);
+		plugin.drawScaled(region, component, graphics);
 		return null;
 	}
 }

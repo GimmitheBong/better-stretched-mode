@@ -21,6 +21,15 @@ final class MenuPlacement
 		offsetY = y - nativeBounds.y;
 	}
 
+	MenuPlacement(Rectangle nativeBounds, Point cameraInputOffset)
+	{
+		this.nativeBounds = new Rectangle(nativeBounds);
+		offsetX = -cameraInputOffset.x;
+		offsetY = -cameraInputOffset.y;
+		visibleBounds = new Rectangle(nativeBounds);
+		visibleBounds.translate(offsetX, offsetY);
+	}
+
 	Point toNative(Point point)
 	{
 		// Apply the same translation outside the menu too, preserving its normal close margin.

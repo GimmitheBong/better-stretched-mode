@@ -24,18 +24,24 @@ import net.runelite.api.MainBufferProvider;
 import net.runelite.api.events.BeforeRender;
 import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameStateChanged;
+import net.runelite.api.events.FocusChanged;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.PostClientTick;
 import net.runelite.api.events.ResizeableChanged;
 import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.events.PluginChanged;
 import net.runelite.client.input.MouseManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.plugins.PluginManager;
+import net.runelite.client.plugins.camera.CameraConfig;
+import net.runelite.client.plugins.camera.CameraPlugin;
 import net.runelite.client.ui.overlay.Overlay;
 import net.runelite.client.ui.overlay.OverlayManager;
 
@@ -51,8 +57,14 @@ public class MinimapResizePlugin extends Plugin
 	@Inject private OverlayManager overlayManager;
 	@Inject private MouseManager mouseManager;
 	@Inject private ClientThread clientThread;
+	@Inject private ConfigManager configManager;
+	@Inject private PluginManager pluginManager;
 	private MinimapMouseListener mouseListener;
 	private MenuRelocator menus;
+	private CameraConfig cameraConfig;
+	private volatile boolean cameraPluginActive;
+	private volatile int cameraButtons;
+	private volatile Point cameraInputOffset;
 
 	private final Map<WidgetRegion, RegionState> states = new EnumMap<>(WidgetRegion.class);
 	private final List<Overlay> overlays = new ArrayList<>();
@@ -67,6 +79,7 @@ public class MinimapResizePlugin extends Plugin
 	private boolean rendering;
 	private boolean gateApplied;
 	private WidgetRegion lastGatedTarget;
+	private volatile ResizableLayout layout = ResizableLayout.UNSUPPORTED;
 
 	private static final class RegionState
 	{
@@ -103,11 +116,20 @@ public class MinimapResizePlugin extends Plugin
 	protected void startUp()
 	{
 		menus = new MenuRelocator(client);
+		cameraConfig = configManager.getConfig(CameraConfig.class);
+		cameraPluginActive = false;
+		for (Plugin plugin : pluginManager.getPlugins())
+		{
+			if (plugin instanceof CameraPlugin && pluginManager.isPluginActive(plugin)) { cameraPluginActive = true; }
+		}
 		mouseListener = new MinimapMouseListener(client, this);
 		for (WidgetRegion region : WidgetRegion.values())
 		{
 			states.put(region, new RegionState());
-			overlays.add(new MinimapScaleOverlay(this, region));
+			for (int component : region.components)
+			{
+				overlays.add(new MinimapScaleOverlay(this, region, component));
+			}
 		}
 		overlays.add(new MinimapCaptureOverlay(this));
 		overlays.add(new ScaledWidgetsOverlay(this));
@@ -119,13 +141,17 @@ public class MinimapResizePlugin extends Plugin
 		// Stretched Mode registers at index zero; these receive game-space coordinates.
 		mouseManager.registerMouseListener(mouseListener);
 		mouseManager.registerMouseWheelListener(mouseListener);
+		clientThread.invokeLater(this::updateCameraButtons);
 	}
 
 	@Override
 	protected void shutDown()
 	{
 		enabled = false;
+		cameraButtons = 0;
+		cameraInputOffset = null;
 		inputFrames = Collections.emptyList();
+		layout = ResizableLayout.UNSUPPORTED;
 		pendingPress.set(null);
 		dragTarget = null;
 		mouseManager.unregisterMouseListener(mouseListener);
@@ -153,6 +179,7 @@ public class MinimapResizePlugin extends Plugin
 	@Subscribe(priority = 1000)
 	public void onBeforeRender(BeforeRender event)
 	{
+		synchronizeLayout();
 		// Input property changes are only for hit testing, never for rendering.
 		inputGate.restore();
 		gateApplied = false;
@@ -173,6 +200,8 @@ public class MinimapResizePlugin extends Plugin
 	@Subscribe(priority = 1000)
 	public void onClientTick(ClientTick event)
 	{
+		updateCameraButtons();
+		synchronizeLayout();
 		// ClientTick is AFTER the native interface input pass, BEFORE client scripts.
 		// Restore here so scripts can update or intentionally hide the real widgets.
 		inputGate.restore();
@@ -193,6 +222,7 @@ public class MinimapResizePlugin extends Plugin
 	@Subscribe(priority = -1000)
 	public void onPostClientTick(PostClientTick event)
 	{
+		updateCameraButtons();
 		rendering = false;
 		applyInputGate();
 	}
@@ -206,7 +236,7 @@ public class MinimapResizePlugin extends Plugin
 	@Subscribe
 	public void onMenuOpened(MenuOpened event)
 	{
-		if (canScale()) { menus.opened(); }
+		if (canScale() && synchronizeLayout()) { menus.opened(); }
 		else { menus.reset(); }
 	}
 
@@ -218,10 +248,19 @@ public class MinimapResizePlugin extends Plugin
 			inputFrames = Collections.emptyList();
 			clientThread.invokeLater(this::reset);
 		}
+		else if ("zoom".equals(event.getGroup()))
+		{
+			clientThread.invokeLater(this::updateCameraButtons);
+		}
 	}
 
 	private void reset()
 	{
+		if (!enabled || client.getGameState() != GameState.LOGGED_IN)
+		{
+			mouseListener.resetGestures();
+			cameraInputOffset = null;
+		}
 		menus.reset();
 		inputGate.restore();
 		inputGate.invalidateTraversal();
@@ -231,16 +270,37 @@ public class MinimapResizePlugin extends Plugin
 		dragTarget = null;
 		for (RegionState state : states.values())
 		{
+			state.widget = null;
+			state.transform = null;
 			state.input = null;
 			state.rendered = false;
 			state.foreground = null;
 			state.compositor.invalidate();
+			state.pendingMaskChange = false;
 		}
+	}
+
+	/** Client thread only: restore old widget flags before discarding the old root's state. */
+	private boolean synchronizeLayout()
+	{
+		ResizableLayout current = ResizableLayout.current(client);
+		if (current != layout)
+		{
+			reset();
+			for (RegionState state : states.values())
+			{
+				state.compositor.clear();
+				state.scaler.clear();
+			}
+			layout = current;
+		}
+		return current != ResizableLayout.UNSUPPORTED;
 	}
 
 	private boolean canScale()
 	{
-		return enabled && client.getGameState() == GameState.LOGGED_IN && client.isResized();
+		return enabled && client.getGameState() == GameState.LOGGED_IN
+			&& ResizableLayout.current(client) != ResizableLayout.UNSUPPORTED;
 	}
 
 	private BufferedImage bufferImage()
@@ -256,7 +316,7 @@ public class MinimapResizePlugin extends Plugin
 	void captureBackground()
 	{
 		BufferedImage image = bufferImage();
-		if (!canScale() || image == null)
+		if (!synchronizeLayout() || !canScale() || image == null)
 		{
 			reset();
 			return;
@@ -265,7 +325,7 @@ public class MinimapResizePlugin extends Plugin
 		{
 			WidgetRegion region = entry.getKey();
 			RegionState state = entry.getValue();
-			state.widget = region.visibleWidget(client);
+			state.widget = region.visibleWidget(client, layout);
 			if (state.widget == null)
 			{
 				state.input = null;
@@ -283,7 +343,7 @@ public class MinimapResizePlugin extends Plugin
 				state.input = null;
 				continue;
 			}
-			state.compositor.capture(image, source);
+			state.compositor.capture(image, source, client.isGpu());
 		}
 		publishFrames();
 	}
@@ -303,18 +363,18 @@ public class MinimapResizePlugin extends Plugin
 		}
 	}
 
-	void drawScaled(WidgetRegion region, Graphics2D graphics)
+	void drawScaled(WidgetRegion region, int component, Graphics2D graphics)
 	{
 		RegionState state = states.get(region);
 		BufferedImage image = bufferImage();
-		if (state == null || !canScale() || image == null)
+		if (!synchronizeLayout() || state == null || !canScale() || image == null || region.component(layout) != component)
 		{
 			return;
 		}
-		Widget widget = region.visibleWidget(client);
+		Widget widget = region.visibleWidget(client, layout);
 		if (widget != null && widget == state.widget && state.compositor.matches(image, widget.getBounds()))
 		{
-			state.foreground = state.compositor.extractAndRestore(region == WidgetRegion.MINIMAP ? mapInterior(widget) : null);
+			state.foreground = state.compositor.extractAndRestore(region == WidgetRegion.MINIMAP ? mapInterior() : null);
 		}
 		else
 		{
@@ -328,14 +388,14 @@ public class MinimapResizePlugin extends Plugin
 			if (entry.getKey() != region && later.widget != null
 				&& later.compositor.matches(image, later.widget.getBounds()))
 			{
-				later.compositor.capture(image, later.widget.getBounds());
+				later.compositor.capture(image, later.widget.getBounds(), client.isGpu());
 			}
 		}
 	}
 
 	void drawOutputs(Graphics2D graphics)
 	{
-		if (!canScale())
+		if (!synchronizeLayout() || !canScale())
 		{
 			return;
 		}
@@ -361,7 +421,7 @@ public class MinimapResizePlugin extends Plugin
 				boolean newInput = state.input == null;
 				BufferedImage filtered = state.scaler.scale(state.foreground, destination.width, destination.height,
 					filter, config.sharpening(), state.compositor.changed() || newInput, newInput ? 0 : config.scalingFps());
-				g.drawImage(filtered, destination.x, destination.y, null);
+				UiBlitter.draw(bufferImage(), filtered, destination.x, destination.y, g, client.isGpu());
 				state.input = new MinimapInputFrame(entry.getKey(), state.transform, state.foreground,
 					state.input, state.scaler.updated() && state.pendingMaskChange);
 				if (state.scaler.updated()) { state.pendingMaskChange = false; }
@@ -381,9 +441,9 @@ public class MinimapResizePlugin extends Plugin
 		applyInputGate();
 	}
 
-	private Shape mapInterior(Widget container)
+	private Shape mapInterior()
 	{
-		int id = container.getId() == InterfaceID.ToplevelOsrsStretch.MAP_CONTAINER
+		int id = layout == ResizableLayout.CLASSIC
 			? InterfaceID.ToplevelOsrsStretch.MINIMAP : InterfaceID.ToplevelPreEoc.MINIMAP;
 		Widget map = client.getWidget(id);
 		if (map == null || map.isHidden())
@@ -409,17 +469,71 @@ public class MinimapResizePlugin extends Plugin
 
 	List<MinimapInputFrame> getInputFrames()
 	{
-		return enabled ? inputFrames : Collections.emptyList();
+		return enabled && layout != ResizableLayout.UNSUPPORTED && layout == ResizableLayout.current(client)
+			? inputFrames : Collections.emptyList();
 	}
 
 	void recordMenuPress(Point cursor, Point nativePoint, WidgetRegion target)
 	{
-		if (enabled) { menus.recordPress(cursor, nativePoint, target); }
+		if (enabled && layout == ResizableLayout.current(client)) { menus.recordPress(cursor, nativePoint, target); }
 	}
 
 	Point translateMenuPoint(Point point)
 	{
-		return enabled ? menus.translate(point) : point;
+		return enabled && layout == ResizableLayout.current(client) ? menus.translate(point) : point;
+	}
+
+	private void updateCameraButtons()
+	{
+		if (!enabled || client.getGameState() != GameState.LOGGED_IN) { cameraButtons = 0; return; }
+		boolean rightAlways = cameraPluginActive && cameraConfig != null && cameraConfig.rightClickMovesCamera()
+			&& !cameraConfig.rightClickMenuBlocksCamera();
+		int buttons = client.getVarbitValue(VarbitID.MOUSECAM_DISABLED) == 0 || rightAlways ? 1 << MouseEvent.BUTTON2 : 0;
+		if (rightAlways) { buttons |= 1 << MouseEvent.BUTTON3; }
+		cameraButtons = buttons;
+	}
+
+	boolean isCameraPress(MouseEvent event)
+	{
+		// Match native Alt/middle and Meta/right button interpretation after remappers.
+		int button = event.isAltDown() || event.getButton() == MouseEvent.BUTTON2 ? MouseEvent.BUTTON2
+			: event.isMetaDown() || event.getButton() == MouseEvent.BUTTON3 ? MouseEvent.BUTTON3 : event.getButton();
+		return button > 0 && button < 32 && (cameraButtons & (1 << button)) != 0;
+	}
+
+	void recordCameraInputOffset(Point offset)
+	{
+		cameraInputOffset = offset == null ? null : new Point(offset);
+		if (enabled) { menus.setCameraInputOffset(offset); }
+	}
+
+	@Subscribe
+	public void onFocusChanged(FocusChanged event)
+	{
+		if (!event.isFocused())
+		{
+			mouseListener.resetGestures();
+			recordCameraInputOffset(null);
+			dragTarget = null;
+		}
+	}
+
+	@Subscribe
+	public void onPluginChanged(PluginChanged event)
+	{
+		if (event.getPlugin() instanceof CameraPlugin)
+		{
+			cameraPluginActive = event.isLoaded();
+			clientThread.invokeLater(this::updateCameraButtons);
+		}
+		if (enabled && event.getPlugin() != this && event.isLoaded())
+		{
+			// See final remapped buttons even when another input plugin is enabled later.
+			mouseManager.unregisterMouseListener(mouseListener);
+			mouseManager.registerMouseListener(mouseListener);
+			mouseManager.unregisterMouseWheelListener(mouseListener);
+			mouseManager.registerMouseWheelListener(mouseListener);
+		}
 	}
 
 	void recordPointer(Point point, WidgetRegion target, int eventId, long when)
@@ -452,7 +566,7 @@ public class MinimapResizePlugin extends Plugin
 		{
 			return;
 		}
-		if (!canScale())
+		if (!synchronizeLayout() || !canScale())
 		{
 			inputGate.restore();
 			gateApplied = false;
@@ -468,6 +582,12 @@ public class MinimapResizePlugin extends Plugin
 		if (dragTarget != null && !client.isMenuOpen())
 		{
 			target = dragTarget;
+		}
+		if (cameraInputOffset != null)
+		{
+			// A right-camera press may also open an object/widget menu. Preserve that
+			// click's operations for its input pass, then exclude UI for the held drag.
+			target = press != null && System.nanoTime() - press.created < 500_000_000L ? press.target : null;
 		}
 		if (gateApplied && target == lastGatedTarget) { return; }
 		inputGate.restore();

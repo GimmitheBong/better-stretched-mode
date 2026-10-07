@@ -112,7 +112,7 @@ public interface MinimapResizeConfig extends Config
 	default int lowerTabUp() { return 0; }
 
 	@ConfigItem(keyName = "panelScale", name = "Inventory / panel size", position = 21, section = SIDE_PANEL,
-		description = "Scale the active inventory, spellbook, prayer or other side panel. Tab bars keep their separate size.")
+		description = "Classic: full inventory frame and its tab buttons. Modern: open side panel; modern tab bars keep their separate size.")
 	@Range(min = 50, max = 250)
 	@Units(Units.PERCENT)
 	default int panelScale() { return 100; }

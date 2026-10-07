@@ -49,6 +49,114 @@ public class MinimapMouseListenerTest
 			x, y, 1, false, MouseEvent.BUTTON1);
 	}
 
+	private void enableMiddleCamera()
+	{
+		when(plugin.isCameraPress(any(MouseEvent.class))).thenAnswer(invocation ->
+			((MouseEvent) invocation.getArgument(0)).getButton() == MouseEvent.BUTTON2);
+	}
+
+	private MouseEvent move(int x, int y)
+	{
+		return new MouseEvent(canvas, MouseEvent.MOUSE_MOVED, 122, 0, x, y, 0, false);
+	}
+
+	private MouseEvent cameraPress(int x, int y, int modifiers)
+	{
+		return new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, 123, modifiers, x, y, 1, false, MouseEvent.BUTTON2);
+	}
+
+	private MouseEvent cameraDrag(int x, int y, int modifiers)
+	{
+		return new MouseEvent(canvas, MouseEvent.MOUSE_DRAGGED, 124, modifiers, x, y, 0, false);
+	}
+
+	@Test
+	public void cameraDragFromSceneKeepsRawDeltasAcrossEveryScaledRegion()
+	{
+		enableMiddleCamera();
+		for (WidgetRegion region : WidgetRegion.values())
+		{
+			BufferedImage image = new BufferedImage(100, 100, BufferedImage.TYPE_INT_ARGB);
+			java.awt.Graphics2D graphics = image.createGraphics();
+			graphics.setColor(java.awt.Color.WHITE);
+			graphics.fillRect(0, 0, 100, 100);
+			graphics.dispose();
+			when(plugin.getInputFrames()).thenReturn(Collections.singletonList(new MinimapInputFrame(region,
+				new MinimapTransform(new Rectangle(900, 0, 100, 100), new Rectangle(800, 0, 200, 200)), image)));
+			listener.mouseMoved(move(500, 500));
+			assertEquals(new Point(500, 500), listener.mousePressed(cameraPress(500, 500, InputEvent.BUTTON2_DOWN_MASK)).getPoint());
+			assertEquals(new Point(850, 80), listener.mouseDragged(cameraDrag(850, 80, InputEvent.BUTTON2_DOWN_MASK)).getPoint());
+			assertEquals(new Point(960, 90), listener.mouseDragged(cameraDrag(960, 90, InputEvent.BUTTON2_DOWN_MASK)).getPoint());
+			assertEquals(new Point(750, 120), listener.mouseDragged(cameraDrag(750, 120, InputEvent.BUTTON2_DOWN_MASK)).getPoint());
+			MouseEvent release = new MouseEvent(canvas, MouseEvent.MOUSE_RELEASED, 125, 0, 850, 80, 1, false, MouseEvent.BUTTON2);
+			assertEquals(new Point(850, 80), listener.mouseReleased(release).getPoint());
+			assertEquals(new Point(925, 40), listener.mouseMoved(move(850, 80)).getPoint());
+		}
+	}
+
+	@Test
+	public void cameraDragStartedOverWidgetKeepsTheExistingHoverOffsetWithoutScalingDeltas()
+	{
+		enableMiddleCamera();
+		assertEquals(new Point(925, 40), listener.mouseMoved(move(850, 80)).getPoint());
+		assertEquals(new Point(925, 40), listener.mousePressed(cameraPress(850, 80, InputEvent.BUTTON2_DOWN_MASK)).getPoint());
+		assertEquals(new Point(935, 50), listener.mouseDragged(cameraDrag(860, 90, InputEvent.BUTTON2_DOWN_MASK)).getPoint());
+		assertEquals(new Point(825, 80), listener.mouseDragged(cameraDrag(750, 120, InputEvent.BUTTON2_DOWN_MASK)).getPoint());
+		assertEquals(new Point(825, 80), listener.mouseReleased(new MouseEvent(canvas, MouseEvent.MOUSE_RELEASED,
+			125, 0, 750, 120, 1, false, MouseEvent.BUTTON2)).getPoint());
+		assertEquals(new Point(750, 120), listener.mouseMoved(move(750, 120)).getPoint());
+	}
+
+	@Test
+	public void remappedRightButtonAndUnremappedReleaseDoNotChangeCameraSpace()
+	{
+		enableMiddleCamera();
+		listener.mouseMoved(move(500, 500));
+		listener.mousePressed(cameraPress(500, 500, InputEvent.BUTTON3_DOWN_MASK));
+		assertEquals(new Point(850, 80), listener.mouseDragged(cameraDrag(850, 80, InputEvent.BUTTON3_DOWN_MASK)).getPoint());
+		assertEquals(new Point(850, 80), listener.mouseReleased(new MouseEvent(canvas, MouseEvent.MOUSE_RELEASED,
+			125, 0, 850, 80, 1, false, MouseEvent.BUTTON3)).getPoint());
+		assertEquals(new Point(925, 40), listener.mouseMoved(move(850, 80)).getPoint());
+	}
+
+	@Test
+	public void middleButtonRemappedToMenuStillUsesNormalMenuInput()
+	{
+		enableMiddleCamera();
+		MouseEvent remapped = new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, 123,
+			InputEvent.BUTTON2_DOWN_MASK, 850, 80, 1, false, MouseEvent.BUTTON3);
+		assertEquals(new Point(925, 40), listener.mousePressed(remapped).getPoint());
+		when(client.isMenuOpen()).thenReturn(true);
+		assertEquals(new Point(850, 100), listener.mouseMoved(move(850, 100)).getPoint());
+	}
+
+	@Test
+	public void focusResetOrMissingReleaseRestoresNormalWidgetRouting()
+	{
+		enableMiddleCamera();
+		listener.mouseMoved(move(500, 500));
+		listener.mousePressed(cameraPress(500, 500, InputEvent.BUTTON2_DOWN_MASK));
+		listener.mouseDragged(cameraDrag(850, 80, InputEvent.BUTTON2_DOWN_MASK));
+		listener.resetGestures();
+		assertEquals(new Point(925, 40), listener.mouseMoved(move(850, 80)).getPoint());
+		listener.mouseMoved(move(500, 500));
+		listener.mousePressed(cameraPress(500, 500, InputEvent.BUTTON2_DOWN_MASK));
+		assertEquals(new Point(925, 40), listener.mouseMoved(move(850, 80)).getPoint());
+	}
+
+	@Test
+	public void cameraWheelInputKeepsPrecisionAndDoesNotJumpToWidgetCoordinates()
+	{
+		enableMiddleCamera();
+		listener.mouseMoved(move(500, 500));
+		listener.mousePressed(cameraPress(500, 500, InputEvent.BUTTON2_DOWN_MASK));
+		MouseWheelEvent wheel = new MouseWheelEvent(canvas, MouseEvent.MOUSE_WHEEL, 124, InputEvent.BUTTON2_DOWN_MASK,
+			850, 80, 850, 80, 0, false, MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, 1, 0.25);
+		assertEquals(new Point(850, 80), listener.mouseWheelMoved(wheel).getPoint());
+		assertEquals(0.25, wheel.getPreciseWheelRotation(), 0.0);
+		assertFalse(wheel.isConsumed());
+	}
+
 	@Test
 	public void translatedClickRetainsButtonModifiersAndTime()
 	{
